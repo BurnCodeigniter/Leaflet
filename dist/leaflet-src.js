@@ -1,6 +1,6 @@
 /*
  Copyright (c) 2010-2012, CloudMade, Vladimir Agafonkin
- Leaflet is a modern open-source JavaScript library for interactive maps.
+ Leaflet is an open-source JavaScript library for mobile-friendly interactive maps.
  http://leaflet.cloudmade.com
 */
 (function (window, undefined) {
@@ -374,6 +374,7 @@ L.Mixin.Events.fire = L.Mixin.Events.fireEvent;
 	}());
 
 	L.Browser = {
+		ua: ua,
 		ie: ie,
 		ie6: ie6,
 		webkit: webkit,
@@ -715,10 +716,10 @@ L.DomUtil = {
 	},
 
 	setOpacity: function (el, value) {
-		if (L.Browser.ie) {
-		    el.style.filter += value !== 1 ? 'alpha(opacity=' + Math.round(value * 100) + ')' : '';
-		} else {
+		if ('opacity' in el.style) {
 			el.style.opacity = value;
+		} else if (L.Browser.ie) {
+			el.style.filter += value !== 1 ? 'alpha(opacity=' + Math.round(value * 100) + ')' : '';
 		}
 	},
 
@@ -1634,9 +1635,8 @@ L.Map = L.Class.extend({
 
 		L.DomEvent.on(this._container, 'click', this._onMouseClick, this);
 
-		var events = ['dblclick', 'mousedown', 'mouseenter', 'mouseleave', 'mousemove', 'contextmenu'];
-
-		var i, len;
+		var events = ['dblclick', 'mousedown', 'mousedown', 'mouseenter', 'mouseleave', 'mousemove', 'contextmenu'],
+		    i, len;
 
 		for (i = 0, len = events.length; i < len; i++) {
 			L.DomEvent.on(this._container, events[i], this._fireMouseEvent, this);
@@ -1648,8 +1648,8 @@ L.Map = L.Class.extend({
 	},
 
 	_onResize: function () {
-		// TODO cancel previous frame
-		L.Util.requestAnimFrame(this.invalidateSize, this, false, this._container);
+		L.Util.cancelAnimFrame(this._resizeRequest);
+		this._resizeRequest = L.Util.requestAnimFrame(this.invalidateSize, this, false, this._container);
 	},
 
 	_onMouseClick: function (e) {
@@ -1942,6 +1942,24 @@ L.TileLayer = L.Class.extend({
 		}
 	},
 
+	setUrl: function (url, noRedraw) {
+		this._url = url;
+
+		if (!noRedraw) {
+			this.redraw();
+		}
+
+		return this;
+	},
+
+	redraw: function () {
+		if (this._map) {
+			this._reset(true);
+			this._update();
+		}
+		return this;
+	},
+
 	_updateOpacity: function () {
 		L.DomUtil.setOpacity(this._container, this.options.opacity);
 
@@ -2150,16 +2168,17 @@ L.TileLayer = L.Class.extend({
 	// image-specific code (override to implement e.g. Canvas or SVG tile layer)
 
 	getTileUrl: function (tilePoint, zoom) {
-		var subdomains = this.options.subdomains,
-			index = (tilePoint.x + tilePoint.y) % subdomains.length,
-			s = this.options.subdomains[index];
-
 		return L.Util.template(this._url, L.Util.extend({
-			s: s,
+			s: this._getSubdomain(tilePoint),
 			z: this._getOffsetZoom(zoom),
 			x: tilePoint.x,
 			y: tilePoint.y
 		}, this.options));
+	},
+
+	_getSubdomain: function (tilePoint) {
+		var index = (tilePoint.x + tilePoint.y) % this.options.subdomains.length;
+		return this.options.subdomains[index];
 	},
 
 	_createTileProto: function () {
@@ -2244,6 +2263,7 @@ L.tileLayer = function (url, options) {
 
 
 L.TileLayer.WMS = L.TileLayer.extend({
+	
 	defaultWmsParams: {
 		service: 'WMS',
 		request: 'GetMap',
@@ -2255,6 +2275,7 @@ L.TileLayer.WMS = L.TileLayer.extend({
 	},
 
 	initialize: function (url, options) { // (String, Object)
+
 		this._url = url;
 
 		var wmsParams = L.Util.extend({}, this.defaultWmsParams);
@@ -2273,6 +2294,7 @@ L.TileLayer.WMS = L.TileLayer.extend({
 	},
 
 	onAdd: function (map, insertAtTheBottom) {
+
 		var projectionKey = parseFloat(this.wmsParams.version) >= 1.3 ? 'crs' : 'srs';
 		this.wmsParams[projectionKey] = map.options.crs.code;
 
@@ -2280,23 +2302,33 @@ L.TileLayer.WMS = L.TileLayer.extend({
 	},
 
 	getTileUrl: function (tilePoint, zoom) { // (Point, Number) -> String
+		
 		var map = this._map,
 			crs = map.options.crs,
-
 			tileSize = this.options.tileSize,
-
+			
 			nwPoint = tilePoint.multiplyBy(tileSize),
 			sePoint = nwPoint.add(new L.Point(tileSize, tileSize)),
 
-			nwMap = map.unproject(nwPoint, zoom),
-			seMap = map.unproject(sePoint, zoom),
+			nw = crs.project(map.unproject(nwPoint, zoom)),
+			se = crs.project(map.unproject(sePoint, zoom)),
 
-			nw = crs.project(nwMap),
-			se = crs.project(seMap),
+			bbox = [nw.x, se.y, se.x, nw.y].join(','),
 
-			bbox = [nw.x, se.y, se.x, nw.y].join(',');
+			url = L.Util.template(this._url, {s: this._getSubdomain(tilePoint)});
 
-		return this._url + L.Util.getParamString(this.wmsParams) + "&bbox=" + bbox;
+		return url + L.Util.getParamString(this.wmsParams) + "&bbox=" + bbox;
+	},
+
+	setParams: function (params, noRedraw) {
+
+		L.Util.extend(this.wmsParams, params);
+		
+		if (!noRedraw) {
+			this.redraw();
+		}
+
+		return this;
 	}
 });
 
@@ -2647,15 +2679,6 @@ L.Marker = L.Class.extend({
 
 		if (map.options.zoomAnimation && map.options.markerZoomAnimation) {
 			map.on('zoomanim', this._animateZoom, this);
-			L.DomUtil.addClass(this._icon, 'leaflet-zoom-animated');
-			if (this._shadow) {
-				L.DomUtil.addClass(this._shadow, 'leaflet-zoom-animated');
-			}
-		} else {
-			L.DomUtil.addClass(this._icon, 'leaflet-zoom-hide');
-			if (this._shadow) {
-				L.DomUtil.addClass(this._shadow, 'leaflet-zoom-hide');
-			}
 		}
 	},
 
@@ -2720,7 +2743,10 @@ L.Marker = L.Class.extend({
 	},
 
 	_initIcon: function () {
-		var options = this.options;
+		var options = this.options,
+		    map = this._map,
+		    animation = (map.options.zoomAnimation && map.options.markerZoomAnimation),
+		    classToAdd = animation ? 'leaflet-zoom-animated' : 'leaflet-zoom-hide';
 
 		if (!this._icon) {
 			this._icon = options.icon.createIcon();
@@ -2731,9 +2757,15 @@ L.Marker = L.Class.extend({
 
 			this._initInteraction();
 			this._updateOpacity();
+
+			L.DomUtil.addClass(this._icon, classToAdd);
 		}
 		if (!this._shadow) {
 			this._shadow = options.icon.createShadow();
+
+			if (this._shadow) {
+				L.DomUtil.addClass(this._shadow, classToAdd);
+			}
 		}
 
 		var panes = this._map._panes;
@@ -2838,16 +2870,25 @@ L.DivIcon = L.Icon.extend({
 		/*
 		iconAnchor: (Point)
 		popupAnchor: (Point)
-		innerHTML: (String)
+		html: (String)
+		bgPos: (Point)
 		*/
 		className: 'leaflet-div-icon'
 	},
 
 	createIcon: function () {
-		var div = document.createElement('div');
-		if (this.options.html) {
-			div.innerHTML = this.options.html;
+		var div = document.createElement('div'),
+		    options = this.options;
+
+		if (options.html) {
+			div.innerHTML = options.html;
 		}
+
+		if (options.bgPos) {
+			div.style.backgroundPosition =
+					(-options.bgPos.x) + 'px ' + (-options.bgPos.y) + 'px';
+		}
+
 		this._setIconStyles(div, 'icon');
 		return div;
 	},
@@ -2895,7 +2936,7 @@ L.Popup = L.Class.extend({
 		}
 		this._updateContent();
 
-		this._container.style.opacity = '0';
+		L.DomUtil.setOpacity(this._container, 0);
 		map._panes.popupPane.appendChild(this._container);
 
 		map.on('viewreset', this._updatePosition, this);
@@ -2910,11 +2951,16 @@ L.Popup = L.Class.extend({
 
 		this._update();
 
-		this._container.style.opacity = '1'; //TODO fix ugly opacity hack
+		L.DomUtil.setOpacity(this._container, 1);
 	},
 
 	addTo: function (map) {
 		map.addLayer(this);
+		return this;
+	},
+
+	openOn: function (map) {
+		map.openPopup(this);
 		return this;
 	},
 
@@ -2929,7 +2975,7 @@ L.Popup = L.Class.extend({
 			zoomanim: this._zoomAnimation
 		}, this);
 
-		this._container.style.opacity = '0';
+		L.DomUtil.setOpacity(this._container, 0);
 
 		this._map = null;
 	},
@@ -2966,6 +3012,7 @@ L.Popup = L.Class.extend({
 		if (this.options.closeButton) {
 			closeButton = this._closeButton = L.DomUtil.create('a', prefix + '-close-button', container);
 			closeButton.href = '#close';
+			closeButton.innerHTML = '&#215;';
 
 			L.DomEvent.on(closeButton, 'click', this._onCloseButtonClick, this);
 		}
@@ -3108,6 +3155,7 @@ L.popup = function (options, source) {
 	return new L.Popup(options, source);
 };
 
+
 /*
  * Popup extension to L.Marker, adding openPopup & bindPopup methods.
  */
@@ -3130,7 +3178,7 @@ L.Marker.include({
 	},
 
 	bindPopup: function (content, options) {
-		var anchor = this.options.icon.options.popupAnchor || new L.Point(0, 0);
+		var anchor = L.point(this.options.icon.options.popupAnchor) || new L.Point(0, 0);
 
 		if (options && options.offset) {
 			anchor = anchor.add(options.offset);
@@ -3277,6 +3325,10 @@ L.FeatureGroup = L.LayerGroup.extend({
 	includes: L.Mixin.Events,
 
 	addLayer: function (layer) {
+		if (this._layers[L.Util.stamp(layer)]) {
+			return this;
+		}
+		
 		layer.on('click dblclick mouseover mouseout', this._propagateEvent, this);
 
 		L.LayerGroup.prototype.addLayer.call(this, layer);
@@ -3523,10 +3575,6 @@ L.Path = L.Path.extend({
 			return;
 		}
 
-		if (e.type === 'contextmenu') {
-			L.DomEvent.preventDefault(e);
-		}
-
 		this._fireMouseEvent(e);
 	},
 
@@ -3534,6 +3582,11 @@ L.Path = L.Path.extend({
 		if (!this.hasEventListeners(e.type)) {
 			return;
 		}
+		
+		if (e.type === 'contextmenu') {
+			L.DomEvent.preventDefault(e);
+		}
+
 		var map = this._map,
 			containerPoint = map.mouseEventToContainerPoint(e),
 			layerPoint = map.containerPointToLayerPoint(containerPoint),
@@ -3654,13 +3707,17 @@ L.Path.include({
  */
 
 L.Browser.vml = (function () {
-	var div = document.createElement('div');
-	div.innerHTML = '<v:shape adj="1"/>';
+	try {
+		var div = document.createElement('div');
+		div.innerHTML = '<v:shape adj="1"/>';
 
-	var shape = div.firstChild;
-	shape.style.behavior = 'url(#default#VML)';
+		var shape = div.firstChild;
+		shape.style.behavior = 'url(#default#VML)';
 
-	return shape && (typeof shape.adj === 'object');
+		return shape && (typeof shape.adj === 'object');
+	} catch (e) {
+		return false;
+	}
 }());
 
 L.Path = L.Browser.svg || !L.Browser.vml ? L.Path : L.Path.extend({
@@ -4283,6 +4340,8 @@ L.Polyline = L.Path.extend({
 	},
 
 	_updatePath: function () {
+		if (!this._map) { return; }
+
 		this._clipPoints();
 		this._simplifyPoints();
 
@@ -4461,6 +4520,14 @@ L.polygon = function (latlngs, options) {
 
 	L.MultiPolyline = createMulti(L.Polyline);
 	L.MultiPolygon = createMulti(L.Polygon);
+
+	L.multiPolyline = function (latlngs, options) {
+		return new L.MultiPolyline(latlngs, options);
+	};
+
+	L.multiPolygon = function (latlngs, options) {
+		return new L.MultiPolygon(latlngs, options);
+	};
 }());
 
 
@@ -4720,7 +4787,7 @@ L.GeoJSON = L.FeatureGroup.extend({
 	},
 
 	addData: function (geojson) {
-		var features = geojson.features,
+		var features = geojson instanceof Array ? geojson : geojson.features,
 		    i, len;
 
 		if (features) {
@@ -5204,9 +5271,9 @@ L.Map.mergeOptions({
 	dragging: true,
 
 	inertia: !L.Browser.android23,
-	inertiaDeceleration: L.Browser.touch ? 3000 : 2000, // px/s^2
-	inertiaMaxSpeed:     L.Browser.touch ? 1500 : 1000, // px/s
-	inertiaThreshold:    L.Browser.touch ? 32   : 16, // ms
+	inertiaDeceleration: 3000, // px/s^2
+	inertiaMaxSpeed: 1500, // px/s
+	inertiaThreshold: L.Browser.touch ? 32 : 14, // ms
 
 	// TODO refactor, move to CRS
 	worldCopyJump: true,
@@ -6019,7 +6086,9 @@ L.Control = L.Class.extend({
 	}
 });
 
-
+L.control = function (options) {
+	return new L.Control(options);
+};
 
 L.Map.include({
 	addControl: function (control) {
@@ -6092,6 +6161,10 @@ L.Map.addInitHook(function () {
 		this.addControl(this.zoomControl);
 	}
 });
+
+L.control.zoom = function (options) {
+	return new L.Control.Zoom(options);
+};
 
 L.Control.Attribution = L.Control.extend({
 	options: {
@@ -6168,7 +6241,7 @@ L.Control.Attribution = L.Control.extend({
 			prefixAndAttribs.push(attribs.join(', '));
 		}
 
-		this._container.innerHTML = prefixAndAttribs.join(' &mdash; ');
+		this._container.innerHTML = prefixAndAttribs.join(' &#8212; ');
 	},
 
 	_onLayerAdd: function (e) {
@@ -6193,6 +6266,10 @@ L.Map.addInitHook(function () {
 		this.attributionControl = (new L.Control.Attribution()).addTo(this);
 	}
 });
+
+L.control.attribution = function (options) {
+	return new L.Control.Attribution(options);
+};
 
 L.Control.Scale = L.Control.extend({
 	options: {
@@ -6230,16 +6307,15 @@ L.Control.Scale = L.Control.extend({
 	_update: function () {
 		var bounds = this._map.getBounds(),
 		    centerLat = bounds.getCenter().lat,
-
-		    left = new L.LatLng(centerLat, bounds.getSouthWest().lng),
-		    right = new L.LatLng(centerLat, bounds.getNorthEast().lng),
+		    halfWorldMeters = new L.LatLng(centerLat, 0).distanceTo(new L.LatLng(centerLat, 180)),
+		    dist = halfWorldMeters * (bounds.getNorthEast().lng - bounds.getSouthWest().lng) / 180,
 
 		    size = this._map.getSize(),
 		    options = this.options,
-                    maxMeters = 0;
+		    maxMeters = 0;
 
 		if (size.x > 0) {
-			maxMeters = left.distanceTo(right) * (options.maxWidth / size.x);
+			maxMeters = dist * (options.maxWidth / size.x);
 		}
 
 		if (options.metric && maxMeters) {
@@ -6286,12 +6362,15 @@ L.Control.Scale = L.Control.extend({
 		var pow10 = Math.pow(10, (Math.floor(num) + '').length - 1),
 		    d = num / pow10;
 
-		d = d >= 10 ? 10 : d >= 5 ? 5 : d >= 2 ? 2 : 1;
+		d = d >= 10 ? 10 : d >= 5 ? 5 : d >= 3 ? 3 : d >= 2 ? 2 : 1;
 
 		return pow10 * d;
 	}
 });
 
+L.control.scale = function (options) {
+	return new L.Control.Scale(options);
+};
 
 
 L.Control.Layers = L.Control.extend({
@@ -6468,6 +6547,9 @@ L.Control.Layers = L.Control.extend({
 	}
 });
 
+L.control.layers = function (options) {
+	return new L.Control.Layers(options);
+};
 
 L.Transition = L.Class.extend({
 	includes: L.Mixin.Events,
@@ -6637,11 +6719,8 @@ L.Transition = L.Transition.NATIVE ? L.Transition : L.Transition.extend({
 		TIMER: true,
 
 		EASINGS: {
-			'ease': [0.25, 0.1, 0.25, 1.0],
-			'linear': [0.0, 0.0, 1.0, 1.0],
-			'ease-in': [0.42, 0, 1.0, 1.0],
-			'ease-out': [0, 0, 0.58, 1.0],
-			'ease-in-out': [0.42, 0, 0.58, 1.0]
+			'linear': function (t) { return t; },
+			'ease-out': function (t) { return t * (2 - t); }
 		},
 
 		CUSTOM_PROPS_GETTERS: {
@@ -6660,12 +6739,7 @@ L.Transition = L.Transition.NATIVE ? L.Transition : L.Transition.extend({
 		this._el = el;
 		L.Util.extend(this.options, options);
 
-		var easings = L.Transition.EASINGS[this.options.easing] || L.Transition.EASINGS.ease;
-
-		this._p1 = new L.Point(0, 0);
-		this._p2 = new L.Point(easings[0], easings[1]);
-		this._p3 = new L.Point(easings[2], easings[3]);
-		this._p4 = new L.Point(1, 1);
+		this._easing = L.Transition.EASINGS[this.options.easing] || L.Transition.EASINGS['ease-out'];
 
 		this._step = L.Util.bind(this._step, this);
 		this._interval = Math.round(1000 / this.options.fps);
@@ -6705,7 +6779,7 @@ L.Transition = L.Transition.NATIVE ? L.Transition : L.Transition.extend({
 			duration = this.options.duration * 1000;
 
 		if (elapsed < duration) {
-			this._runFrame(this._cubicBezier(elapsed / duration));
+			this._runFrame(this._easing(elapsed / duration));
 		} else {
 			this._runFrame(1);
 			this._complete();
@@ -6734,19 +6808,6 @@ L.Transition = L.Transition.NATIVE ? L.Transition : L.Transition.extend({
 	_complete: function () {
 		clearInterval(this._timer);
 		this.fire('end');
-	},
-
-	_cubicBezier: function (t) {
-		var a = Math.pow(1 - t, 3),
-			b = 3 * Math.pow(1 - t, 2) * t,
-			c = 3 * (1 - t) * Math.pow(t, 2),
-			d = Math.pow(t, 3),
-			p1 = this._p1.multiplyBy(a),
-			p2 = this._p2.multiplyBy(b),
-			p3 = this._p3.multiplyBy(c),
-			p4 = this._p4.multiplyBy(d);
-
-		return p1.add(p2).add(p3).add(p4).y;
 	}
 });
 
