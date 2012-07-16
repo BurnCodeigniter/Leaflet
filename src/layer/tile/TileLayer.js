@@ -271,11 +271,9 @@ L.TileLayer = L.Class.extend({
 		if (!this.options.continuousWorld) {
 			var limit = this._getWrapTileNum();
 
-			if (this.options.noWrap && (tilePoint.x < 0 || tilePoint.x >= limit)) {
-				return false;
-			}
-			if (tilePoint.y < 0 || tilePoint.y >= limit) {
-				return false;
+			if (this.options.noWrap && (tilePoint.x < 0 || tilePoint.x >= limit) ||
+				                        tilePoint.y < 0 || tilePoint.y >= limit) {
+				return false; // exceeds world bounds
 			}
 		}
 
@@ -371,11 +369,11 @@ L.TileLayer = L.Class.extend({
 
 	_adjustTilePoint: function (tilePoint) {
 		// wrap tile coordinates
-		var limit = this._getWrapTileNum();
-
 		if (!this.options.continuousWorld && !this.options.noWrap) {
+			var limit = this._getWrapTileNum();
 			tilePoint.x = ((tilePoint.x % limit) + limit) % limit;
 		}
+
 		if (this.options.tms) {
 			tilePoint.y = limit - tilePoint.y - 1;
 		}
